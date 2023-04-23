@@ -8,28 +8,28 @@ import torch
 import numpy as np
 from data_prep import data_prep, get_last_code, dataset_encoding, target_to_onehot
 from torch.utils.data import Dataset, TensorDataset
-
-
+#%%
 def last_visit(row):
     if row['visit_num'] == row['visit_count']:
         return True
     else:
         return False
     
-def data_prep(dataset_path, admin_file, diag_file, procedures_file,
+def data_prep(dataset_path, admin_file, diag_file, procedures_file=None,
               min_visits=2, max_visits=10, code_count_threshold=5,
-              onehot=True):
+              dxtx=True, onehot=True):
     
     icd9_code_categories = list(range(19))
 
     df_adm = pd.read_csv(os.getcwd() + datasets_path + admin_file, dtype=str)
-    df_diags = pd.read_csv(os.getcwd() + datasets_path + diag_file, dtype=str)
-    df_proced = pd.read_csv(os.getcwd() + datasets_path + procedures_file, dtype=str)
-    df_diags = df_diags.dropna()
-    df_proced = df_proced.dropna()
     df_adm.columns = df_adm.columns.str.lower()
+    df_diags = pd.read_csv(os.getcwd() + datasets_path + diag_file, dtype=str)
+    df_diags = df_diags.dropna()
     df_diags.columns = df_diags.columns.str.lower()
-    df_proced.columns = df_proced.columns.str.lower()
+    if dxtx:
+        df_proced = pd.read_csv(os.getcwd() + datasets_path + procedures_file, dtype=str)
+        df_proced = df_proced.dropna()
+        df_proced.columns = df_proced.columns.str.lower()
 
     # remove icd9_codes less than threshold
     icd9_diag_count = df_diags['icd9_code'].value_counts().to_frame().reset_index() \
@@ -37,35 +37,46 @@ def data_prep(dataset_path, admin_file, diag_file, procedures_file,
     df_diags2 = df_diags.merge(icd9_diag_count, how='left', on='icd9_code')
     df_diags2 = df_diags2[df_diags2['count']>=code_count_threshold]
 
-    icd9_proced_count = df_proced['icd9_code'].value_counts().to_frame().reset_index() \
-                            .rename(columns={'icd9_code':'count', 'index':'icd9_code'})
-    df_proced2 = df_proced.merge(icd9_proced_count, how='left', on='icd9_code')
-    df_proced2 = df_proced2[df_proced2['count']>=code_count_threshold]
+    if dxtx:
+        icd9_proced_count = df_proced['icd9_code'].value_counts().to_frame().reset_index() \
+                                .rename(columns={'icd9_code':'count', 'index':'icd9_code'})
+        df_proced2 = df_proced.merge(icd9_proced_count, how='left', on='icd9_code')
+        df_proced2 = df_proced2[df_proced2['count']>=code_count_threshold]
 
 
     df_adm['admittime'] = pd.to_datetime(df_adm['admittime'])
 
     # convert icd9_codes to high level mapping
     df_diags2['icd9_diag'] = df_diags2['icd9_code'].apply(convert_to_high_level_icd9)
-    df_proced2['icd9_proced'] = df_proced2['icd9_code'].apply(convert_to_high_level_icd9)
+    if dxtx:
+        df_proced2['icd9_proced'] = df_proced2['icd9_code'].apply(convert_to_high_level_icd9)
     if not onehot:
         diags = df_diags2['icd9_diag'].unique()
-        proceds = df_proced2['icd9_proced'].unique()
-        codes = np.sort(np.unique(np.concatenate((diags, proceds))))
+        if dxtx:
+            proceds = df_proced2['icd9_proced'].unique()
+            codes = np.sort(np.unique(np.concatenate((diags, proceds))))
+        else:
+            codes = np.sort(np.unique(diags))
         df_code_map = pd.DataFrame([codes, np.arange(start=1,stop=len(codes)+1)]).transpose() \
                         .rename(columns={0:'icd9_code', 1:'icd9_index'})
         icd9_map = df_code_map.set_index('icd9_code').to_dict()['icd9_index']
         df_diags2['icd9_diag'] = df_diags2['icd9_diag'].apply(lambda x: icd9_map[x])
-        df_proced2['icd9_proced'] = df_proced2['icd9_proced'].apply(lambda x: icd9_map[x])
+        if dxtx:
+            df_proced2['icd9_proced'] = df_proced2['icd9_proced'].apply(lambda x: icd9_map[x])
     
 
     df_diags3 = df_diags2.loc[:,['subject_id', 'hadm_id', 'icd9_diag']].dropna()
     df_adm2 = df_adm.loc[:,['hadm_id', 'admittime']]
     df = df_diags3.merge(df_adm2, how='left', on='hadm_id')
 
-    df_proced3 = df_proced2.loc[:,['subject_id', 'hadm_id', 'icd9_proced']]
-    df2 = df.merge(df_proced3, how='left', on=['subject_id','hadm_id']).fillna(-1)
-    df2['icd9_code'] = df2[['icd9_diag', 'icd9_proced']].apply(set, axis=1).apply(lambda x: [i for i in x if i > -1])
+    if dxtx:
+        df_proced3 = df_proced2.loc[:,['subject_id', 'hadm_id', 'icd9_proced']]
+        df2 = df.merge(df_proced3, how='left', on=['subject_id','hadm_id']).fillna(-1)
+        df2['icd9_code'] = df2[['icd9_diag', 'icd9_proced']].apply(set, axis=1).apply(lambda x: [i for i in x if i > -1])
+    else:
+        df2 = df.copy()
+        df2['icd9_code'] = df2['icd9_diag'].apply(lambda x: list(map(int, str(x))))
+
     df3 = df2.loc[:,['subject_id', 'admittime', 'icd9_code']]
     if onehot:
         df4 = df3.groupby(['subject_id', 'admittime']).agg(sum).reset_index()
@@ -141,6 +152,7 @@ class MedDataset(Dataset):
 
      def get_data(self):
         return self.data_tensor
+#%%
 
 if __name__ == '__main__':
 
@@ -153,9 +165,10 @@ if __name__ == '__main__':
     max_visits = 10
     code_count_threshold = 5
 
-    data, target = data_prep(datasets_path, admin_file, diag_file, procedures_file,
-              min_visits=2, max_visits=10, code_count_threshold=5,
-              onehot=True)
+    data, target = data_prep(datasets_path, admin_file, diag_file,
+              procedures_file=procedures_file, min_visits=2, max_visits=10, 
+              code_count_threshold=5, dxtx=False, onehot=False)
     
     print(data.shape)
     print(target.shape)
+
