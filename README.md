@@ -11,5 +11,6 @@ Run Code
   
 Functionality
 - dataset.py - contains data_prep function for data processing and MedDataset class to convert to Tensor Dataset
+- utils.py - contains function to convert icd9 codes to 19 high level categories
 - model.py - contains neural network class to build model
 - main.py - reads in and processes the data, trains the model, and shows results
