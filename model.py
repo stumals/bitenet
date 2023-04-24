@@ -4,6 +4,23 @@ import numpy as np
 import torch.nn.functional as F
 import math
 
+def positionalencoding1d(d_model, length):
+    """
+    :param d_model: dimension of the model
+    :param length: length of positions
+    :return: length*d_model position matrix
+    """
+    if d_model % 2 != 0:
+        raise ValueError("Cannot use sin/cos positional encoding with "
+                         "odd dim (got dim={:d})".format(d_model))
+    pe = torch.zeros(length, d_model)
+    position = torch.arange(0, length).unsqueeze(1)
+    div_term = torch.exp((torch.arange(0, d_model, 2, dtype=torch.float) *
+                         -(math.log(10000.0) / d_model)))
+    pe[:, 0::2] = torch.sin(position.float() * div_term)
+    pe[:, 1::2] = torch.cos(position.float() * div_term)
+
+    return pe
 
 class AttnPooling(nn.Module):
 
@@ -97,6 +114,8 @@ class BiteNet(nn.Module):
       self.emb = nn.Embedding(n_visits * n_codes, embedding_dim)
       self.int_emb = nn.Embedding(n_visits, embedding_dim)
 
+      self.sinusoidal_pos = positionalencoding1d(embedding_dim, n_codes).unsqueeze(0).unsqueeze(0)
+
       self.masc_enc_diag = MaskedEncoderBlock(embedding_dim, n_heads, mask_type="diag")
       self.masc_enc_forward = MaskedEncoderBlock(embedding_dim, n_heads, mask_type="forward")
       self.masc_enc_backward = MaskedEncoderBlock(embedding_dim, n_heads, mask_type="backward")
@@ -124,7 +143,10 @@ class BiteNet(nn.Module):
       input_mask_v = base_mask_v
       input_mask_v = input_mask_v.reshape(bsz, visits, 1)
 
-      emb = self.emb(x).reshape(bsz * visits, codes, -1)
+      emb = self.emb(x)
+      #print(emb.shape, self.sinusoidal_pos.shape)
+      emb += self.sinusoidal_pos
+      emb = emb.reshape(bsz * visits, codes, -1)
       int_emb = self.int_emb(intervals)
 
       x = self.masc_enc_diag(emb, input_mask)
